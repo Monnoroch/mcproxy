@@ -1,109 +1,112 @@
 package mcproxy
 
 import (
- 	"io"
- 	"log"
- 	"net"
- 	"net/http"
- 	"net/url"
- 	"strings"
- 	"sync"
- 	"time"
- 	"bytes"
- 	"io/ioutil"
- 	"github.com/bradfitz/gomemcache/memcache"
- )
+	"bytes"
+	"github.com/bradfitz/gomemcache/memcache"
+	"io"
+	"io/ioutil"
+	"log"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
 
- // onExitFlushLoop is a callback set by tests to detect the state of the
- // flushLoop() goroutine.
- var onExitFlushLoop func()
+// onExitFlushLoop is a callback set by tests to detect the state of the
+// flushLoop() goroutine.
+var onExitFlushLoop func()
 
- // McReverseProxy is an HTTP Handler that takes an incoming request and
- // sends it to another server, proxying the response back to the
- // client.
- type McReverseProxy struct {
- 	// Director must be a function which modifies
- 	// the request into a new request to be sent
- 	// using Transport. Its response is then copied
- 	// back to the original client unmodified.
- 	Director func(*http.Request)
+// McReverseProxy is an HTTP Handler that takes an incoming request and
+// sends it to another server, proxying the response back to the
+// client.
+type McReverseProxy struct {
+	// Director must be a function which modifies
+	// the request into a new request to be sent
+	// using Transport. Its response is then copied
+	// back to the original client unmodified.
+	Director func(*http.Request)
 
- 	// The transport used to perform proxy requests.
- 	// If nil, http.DefaultTransport is used.
- 	Transport http.RoundTripper
+	// The transport used to perform proxy requests.
+	// If nil, http.DefaultTransport is used.
+	Transport http.RoundTripper
 
- 	// FlushInterval specifies the flush interval
- 	// to flush to the client while copying the
- 	// response body.
- 	// If zero, no periodic flushing is done.
- 	FlushInterval time.Duration
+	// FlushInterval specifies the flush interval
+	// to flush to the client while copying the
+	// response body.
+	// If zero, no periodic flushing is done.
+	FlushInterval time.Duration
 
- 	// ErrorLog specifies an optional logger for errors
- 	// that occur when attempting to proxy the request.
- 	// If nil, logging goes to os.Stderr via the log package's
- 	// standard logger.
- 	ErrorLog *log.Logger
+	// ErrorLog specifies an optional logger for errors
+	// that occur when attempting to proxy the request.
+	// If nil, logging goes to os.Stderr via the log package's
+	// standard logger.
+	ErrorLog *log.Logger
 
- 	Mc *memcache.Client
- }
+	Mc *memcache.Client
 
- func singleJoiningSlash(a, b string) string {
- 	aslash := strings.HasSuffix(a, "/")
- 	bslash := strings.HasPrefix(b, "/")
- 	switch {
- 	case aslash && bslash:
- 		return a + b[1:]
- 	case !aslash && !bslash:
- 		return a + "/" + b
- 	}
- 	return a + b
- }
+	Prefix string
+}
 
- // NewSingleHostMcReverseProxy returns a new McReverseProxy that rewrites
- // URLs to the scheme, host, and base path provided in target. If the
- // target's path is "/base" and the incoming request was for "/dir",
- // the target request will be for /base/dir.
- func NewMemcachedReverseProxy(target *url.URL, mc *memcache.Client) *McReverseProxy {
- 	targetQuery := target.RawQuery
- 	director := func(req *http.Request) {
- 		req.URL.Scheme = target.Scheme
- 		req.URL.Host = target.Host
- 		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
- 		if targetQuery == "" || req.URL.RawQuery == "" {
- 			req.URL.RawQuery = targetQuery + req.URL.RawQuery
- 		} else {
- 			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
- 		}
- 	}
- 	return &McReverseProxy{
- 		Director: director,
- 		Mc: mc,
- 	}
- }
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
 
- func copyHeader(dst, src http.Header) {
- 	for k, vv := range src {
- 		for _, v := range vv {
- 			dst.Add(k, v)
- 		}
- 	}
- }
+// NewSingleHostMcReverseProxy returns a new McReverseProxy that rewrites
+// URLs to the scheme, host, and base path provided in target. If the
+// target's path is "/base" and the incoming request was for "/dir",
+// the target request will be for /base/dir.
+func NewMemcachedReverseProxy(target *url.URL, mc *memcache.Client, prefix string) *McReverseProxy {
+	targetQuery := target.RawQuery
+	director := func(req *http.Request) {
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+		if targetQuery == "" || req.URL.RawQuery == "" {
+			req.URL.RawQuery = targetQuery + req.URL.RawQuery
+		} else {
+			req.URL.RawQuery = targetQuery + "&" + req.URL.RawQuery
+		}
+	}
+	return &McReverseProxy{
+		Director: director,
+		Mc:       mc,
+		Prefix:   prefix,
+	}
+}
 
- // Hop-by-hop headers. These are removed when sent to the backend.
- // http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
- var hopHeaders = []string{
- 	"Connection",
- 	"Keep-Alive",
- 	"Proxy-Authenticate",
- 	"Proxy-Authorization",
- 	"Te", // canonicalized version of "TE"
- 	"Trailers",
- 	"Transfer-Encoding",
+func copyHeader(dst, src http.Header) {
+	for k, vv := range src {
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+// Hop-by-hop headers. These are removed when sent to the backend.
+// http://www.w3.org/Protocols/rfc2616/rfc2616-sec13.html
+var hopHeaders = []string{
+	"Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te", // canonicalized version of "TE"
+	"Trailers",
+	"Transfer-Encoding",
 	"Upgrade",
 }
 
 func (self *McReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	mckey := req.URL.String()
+	mckey := self.Prefix + req.URL.String()
 	it, err := self.Mc.Get(mckey)
 	if err != nil && err != memcache.ErrCacheMiss {
 		self.logf("0 memcached error: %v", err)
@@ -168,7 +171,6 @@ func (self *McReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 	for _, h := range hopHeaders {
 		resp.Header.Del(h)
 	}
-
 
 	data, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
