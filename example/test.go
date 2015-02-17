@@ -13,7 +13,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := http.ListenAndServe(":10001", mcproxy.NewMemcachedReverseProxy(u, mc, "test:")); err != nil {
+	if err := http.ListenAndServe(":10001", mcproxy.NewMemcachedReverseProxy(u, mc, "test:", 0)); err != nil {
 		panic(err)
 	}
 }

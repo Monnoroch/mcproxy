@@ -47,6 +47,8 @@ type McReverseProxy struct {
 	Mc *memcache.Client
 
 	Prefix string
+
+	TTL time.Duration
 }
 
 func singleJoiningSlash(a, b string) string {
@@ -65,7 +67,7 @@ func singleJoiningSlash(a, b string) string {
 // URLs to the scheme, host, and base path provided in target. If the
 // target's path is "/base" and the incoming request was for "/dir",
 // the target request will be for /base/dir.
-func NewMemcachedReverseProxy(target *url.URL, mc *memcache.Client, prefix string) *McReverseProxy {
+func NewMemcachedReverseProxy(target *url.URL, mc *memcache.Client, prefix string, ttl time.Duration) *McReverseProxy {
 	targetQuery := target.RawQuery
 	director := func(req *http.Request) {
 		req.URL.Scheme = target.Scheme
@@ -81,6 +83,7 @@ func NewMemcachedReverseProxy(target *url.URL, mc *memcache.Client, prefix strin
 		Director: director,
 		Mc:       mc,
 		Prefix:   prefix,
+		TTL:      ttl,
 	}
 }
 
@@ -179,7 +182,7 @@ func (self *McReverseProxy) ServeHTTP(rw http.ResponseWriter, req *http.Request)
 		return
 	}
 
-	if err = self.Mc.Set(&memcache.Item{Key: mckey, Value: data}); err != nil {
+	if err = self.Mc.Set(&memcache.Item{Key: mckey, Value: data, Expiration: int32(self.TTL / time.Second)}); err != nil {
 		self.logf("1 memcached error: %v", err)
 		rw.WriteHeader(http.StatusInternalServerError)
 		return
